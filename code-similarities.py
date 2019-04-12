@@ -17,13 +17,10 @@ class CppFingerprint:
         self.filestr_loc
 
 class CodeSimilarityChecker:
-    def __init__(self):
-        self.fingerprinter = FP.Fingerprint(kgram_len=5, window_len=4, base=10, modulo=1000)
+    def __init__(self, window_len):
+        self.window_len = window_len
+        self.fingerprinter = FP.Fingerprint(kgram_len=5, window_len=window_len, base=10, modulo=1000)
         self.master_prints = defaultdict(list)
-        self.base_prints = defaultdict(list)
-
-    def add_base(self, base_file):
-        pass
 
     def add_reference(self, reference_dir):
         for f in os.listdir(reference_dir):
@@ -31,16 +28,10 @@ class CodeSimilarityChecker:
             if f.startswith('.'):
                 continue
 
-            print("Adding %s\n" % f)
+            print("Adding %s for reference" % f)
             fpath = os.path.join(reference_dir, f)
             ffile = self.fingerprinter.load_file(fpath)
-            fcomments = self._extract_comments(ffile)
             ffunc = self._extract_cpp_func(ffile)
-
-            # for comment_pos, comment in fcomments:
-            #     fp = self.fingerprinter.generate(str=comment)
-            #     for hashval, pos in fp:
-            #         self.master_prints[hashval].append((f, comment_pos, comment, pos))
 
             for ff in ffunc:
                 func_body = ffile[ff[1]:ff[2]+1]
@@ -55,17 +46,15 @@ class CodeSimilarityChecker:
                 for hashval, pos in fp:
                     self.master_prints[hashval].append((f, ff[2], func_body, pos, clean_func))
 
-    def check(self, check_file, threshold):
+    def check(self, check_file, threshold, output_dir):
+        print("Checking %s against references" % check_file)
         ffile = self.fingerprinter.load_file(check_file)
-        fcomments = self._extract_comments(ffile)
         ffunc = self._extract_cpp_func(ffile)
 
-        # for comment_pos, comment in fcomments:
-        #     fp = self.fingerprinter.generate(str=comment)
-        #     if fp in self.master_prints:
-        #         match = master_prints[fp][0]
-        #         print("Possible match: %s:L%d: %s\n%s:%d\n" % (match[0], match[1], match[2], check_file, comment_pos, comment))
-
+        # Check each extracted function against the references to find matches
+        outputfn = "check_{}.txt".format(check_file.split("/")[1])
+        f = open(os.path.join(output_dir, outputfn), "w+")
+        funcMatch = 0
         for ff in ffunc:
             func_body = ffile[ff[1]:ff[2]+1]
             clean_func = self._clean_up(func_body)
@@ -76,33 +65,33 @@ class CodeSimilarityChecker:
             except FP.FingerprintException:
                 pass
 
+            matchCnt = 0
+            f.write("Analyzing %s\n" % ff[4])
             for hashval, pos in fp:
                 if hashval in self.master_prints:
                     match = self.master_prints[hashval][0]
-                    print("Possible match:\n\
-                            %s:L%d: %s\n\
-                            %s:L%d: %s\n" % (match[0], match[1], match[2], \
-                                            check_file, ff[2], func_body))
-                    print("===========================================")
+                    matchCnt += 1
+                    f.write("Possible match of hash %d:\n%s:L%d: %s\n\n%s:L%d: %s\n" % \
+                        (hashval, match[0], match[1], match[4][match[3]:match[3]+self.window_len], check_file, ff[2], clean_func[pos:pos+self.window_len]))
 
-                    with open("res.txt", "a+") as f:
-                        f.write("Possible match:\n%s:L%d: %s\n\n%s:L%d: %s\n" % \
-                            (match[0], match[1], match[2], check_file, ff[2], func_body))
-                        f.write("===========================================\n")
+            if len(fp) == 0:
+                f.write("NO MATCHES\n")
+            elif matchCnt/len(fp) >= threshold:
+                f.write("LOTS OF MATCHES\n")
+                funcMatch += 1
+            else:
+                f.write("NOT ENOUGH MATCHES\n")
+            f.write("===========================================\n")
+
+        f.close()
+        if funcMatch/len(ffunc) >= threshold:
+            print("More than {:.0%} of all functions were matched".format(threshold))
+        else:
+            print("Less than {:.0%} of all functions could be matched".format(threshold))
 
     def _clean_up(self, line):
         line = ' '.join(line.split())
         return line
-
-    def _extract_comments(self, cpp_file):
-        SINGLE_LINE_PATTERN = "(\/\/.*)"
-        # MULTI_LINE_PATTER =
-        single_comments = []
-        iter_obj = re.finditer(SINGLE_LINE_PATTERN, cpp_file)
-        for it in iter_obj:
-            tup = (it.start(), it.group(1))
-            single_comments.append(tup)
-        return single_comments
 
     def _extract_cpp_func(self, cpp_file):
         '''
@@ -144,21 +133,14 @@ class CodeSimilarityChecker:
             all_func.append(tup)
         return all_func
 
-def compare_fingerprint(fingerprints_a, fingerprints_b, filestr_a, filestr_b):
-    checklist = defaultdict(list)
-    for hashval, pos in fingerprints_a:
-        checklist[hashval].append(pos)
-
-    for hashval, pos in fingerprints_b:
-        if checklist[hashval]:
-            print("Found match %d:\nPosition %d: %s\nPosition %d: %s\n===========" % (hashval, pos, filestr_b[pos:pos+40], checklist[hashval][0], filestr_a[checklist[hashval][0]:checklist[hashval][0]+40]))
-
-
 def main():
-    DATA_DIR = "/Users/hieudosy/Google Drive/NYU/Academics/Spring 2019/6963 - Digital Forensics/final-project/code-similarities/dataset"
-    csc = CodeSimilarityChecker()
+    DATA_DIR = "dataset"
+    csc = CodeSimilarityChecker(50)
     csc.add_reference(os.path.join(DATA_DIR, "reference"))
-    csc.check(os.path.join(DATA_DIR, "hw04.cpp"), 85)
+
+    print("\nChecking stage...")
+    csc.check(os.path.join(DATA_DIR, "suspect_a.cpp"), 0.85, "output")
+    csc.check(os.path.join(DATA_DIR, "suspect_b.cpp"), 0.85, "output")
 
 
 if __name__ == "__main__":
